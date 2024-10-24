@@ -110,7 +110,8 @@ defmodule RustlerPrecompiled do
     * `HTTPS_PROXY` or `https_proxy` - Sets the HTTPS proxy configuration.
 
     * `HEX_CACERTS_PATH` - Sets the path for a custom CA certificates file.
-      If unset, defaults to `CAStore.file_path/0`.
+      If unset, defaults to `:public.cacerts_get/0` (OTP >= 25) if available.
+      In case it's running on an old OTP version, a warning is emitted.
 
     * `MIX_XDG` - If present, sets the OS as `:linux` for the `:filename.basedir/3` when getting
       an user cache dir.
@@ -926,21 +927,17 @@ defmodule RustlerPrecompiled do
       :httpc.set_options([{:https_proxy, {{String.to_charlist(host), port}, []}}])
     end
 
-    # https://erlef.github.io/security-wg/secure_coding_and_deployment_hardening/inets
-    # respects the user provided ca certs via Hex env var
-    cacertfile = System.get_env("HEX_CACERTS_PATH", CAStore.file_path())
-
     http_options = [
-      ssl: [
-        verify: :verify_peer,
-        cacertfile: cacertfile |> String.to_charlist(),
-        # We need to increase depth because the default value is 1.
-        # See: https://erlef.github.io/security-wg/secure_coding_and_deployment_hardening/ssl
-        depth: 3,
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        ]
-      ]
+      ssl:
+        [
+          verify: :verify_peer,
+          # We need to increase depth because the default value is 1.
+          # See: https://erlef.github.io/security-wg/secure_coding_and_deployment_hardening/ssl
+          depth: 3,
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ] ++ cacerts_options()
     ]
 
     options = [body_format: :binary]
@@ -955,6 +952,52 @@ defmodule RustlerPrecompiled do
       other ->
         {:error, "couldn't fetch NIF from #{url}: #{inspect(other)}"}
     end
+  end
+
+  # https://erlef.github.io/security-wg/secure_coding_and_deployment_hardening/inets
+  defp cacerts_options do
+    cond do
+      path = System.get_env("HEX_CACERTS_PATH") ->
+        [cacertfile: path]
+
+      certs = otp_cacerts() ->
+        [cacerts: certs]
+
+      true ->
+        warn_no_cacerts()
+        []
+    end
+  end
+
+  defp otp_cacerts do
+    if System.otp_release() >= "25" do
+      # cacerts_get/0 raises if no certs found
+      try do
+        :public_key.cacerts_get()
+      rescue
+        _ -> nil
+      end
+    end
+  end
+
+  defp warn_no_cacerts do
+    Logger.warning("""
+    No certificate trust store was found.
+
+    A certificate trust store is required in
+    order to download locales for your configuration.
+    Since rustler_precompiled could not detect a system
+    installed certificate trust store one of the
+    following actions may be taken:
+
+    1. Specify the location of a certificate trust store
+       by configuring it in environment variable:
+
+         export HEX_CACERTS_PATH="/path/to/cacerts.pem"
+
+    2. Use OTP 25+ on an OS that has built-in certificate
+       trust store.
+    """)
   end
 
   # Download a list of files from URLs and calculate its checksum.
