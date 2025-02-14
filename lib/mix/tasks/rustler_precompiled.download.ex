@@ -15,6 +15,10 @@ defmodule Mix.Tasks.RustlerPrecompiled.Download do
   You can use the `--ignore-unavailable` flag to ignore any NIFs that are not available.
   This is useful when you are developing a new NIF that does not support all platforms.
 
+  You can use the `--checksum-only` flag to only download the checksum file for the precompiled NIFs.
+  This is useful to avoid downloading large NIFs for all supported platforms to generate the checksums
+  if the checksums are already available.
+
   This task also accept the `--print` flag to print the checksums.
 
   Since v0.7.2 we configure the app invoking this mix task by default. This means that
@@ -30,7 +34,8 @@ defmodule Mix.Tasks.RustlerPrecompiled.Download do
     only_local: :boolean,
     print: :boolean,
     no_config: :boolean,
-    ignore_unavailable: :boolean
+    ignore_unavailable: :boolean,
+    checksum_only: :boolean
   ]
 
   @impl true

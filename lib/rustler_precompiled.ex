@@ -899,11 +899,21 @@ defmodule RustlerPrecompiled do
     tar_gz_file_url({base_url, []}, file_name)
   end
 
-  defp download_nif_artifact(url) when is_binary(url) do
-    download_nif_artifact({url, []})
+  defp download_nif_artifact(url, opts) when is_binary(url) do
+    download_nif_artifact({url, []}, opts)
   end
 
-  defp download_nif_artifact({url, request_headers}) do
+  defp download_nif_artifact({url, request_headers}, opts) do
+    checksum_only? = Keyword.get(opts, :checksum_only?, false)
+    checksum_algo = Keyword.get(opts, :checksum_algo, @checksum_algo)
+
+    url =
+      if checksum_only? do
+        "#{url}.#{checksum_algo}"
+      else
+        url
+      end
+
     url = String.to_charlist(url)
     Logger.debug("Downloading NIF from #{url}")
 
@@ -957,16 +967,43 @@ defmodule RustlerPrecompiled do
     end
   end
 
+  defp get_checksum(true = _checksum_only?, body) do
+    body
+    |> String.split(" ", trim: true)
+    |> hd()
+  end
+
+  defp get_checksum(false = _checksum_only?, body) do
+    @checksum_algo
+    |> :crypto.hash(body)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp save_nif_artifact(true = _checksum_only?, _path, _body) do
+    :ok
+  end
+
+  defp save_nif_artifact(false = _checksum_only?, path, body) do
+    File.write(path, body)
+  end
+
   # Download a list of files from URLs and calculate its checksum.
   # Returns a list with details of the download and the checksum of each file.
   @doc false
   def download_nif_artifacts_with_checksums!(nifs_with_urls, options \\ []) do
     ignore_unavailable? = Keyword.get(options, :ignore_unavailable, false)
+    checksum_only? = Keyword.get(options, :checksum_only, false)
     attempts = max_retries(options)
+
+    download_opts = [
+      checksum_algo: @checksum_algo,
+      checksum_only?: checksum_only?
+    ]
 
     download_results =
       for {lib_name, url} <- nifs_with_urls,
-          do: {lib_name, with_retry(fn -> download_nif_artifact(url) end, attempts)}
+          do:
+            {lib_name, with_retry(fn -> download_nif_artifact(url, download_opts) end, attempts)}
 
     cache_dir = cache_dir("precompiled_nifs")
     :ok = File.mkdir_p(cache_dir)
@@ -974,11 +1011,9 @@ defmodule RustlerPrecompiled do
     Enum.flat_map(download_results, fn result ->
       with {:download, {lib_name, download_result}} <- {:download, result},
            {:download_result, {:ok, body}} <- {:download_result, download_result},
-           hash <- :crypto.hash(@checksum_algo, body),
+           checksum <- get_checksum(checksum_only?, body),
            path <- Path.join(cache_dir, lib_name),
-           {:file, :ok} <- {:file, File.write(path, body)} do
-        checksum = Base.encode16(hash, case: :lower)
-
+           {:file, :ok} <- save_nif_artifact(checksum_only?, path, body) do
         Logger.debug(
           "NIF cached at #{path} with checksum #{inspect(checksum)} (#{@checksum_algo})"
         )
